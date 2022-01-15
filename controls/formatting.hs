@@ -1,0 +1,151 @@
+#!/bin/bash
+
+# Constants
+styler1st_bin=stylish-haskell
+styler1st_opt=--inplace
+styler1st_loc=--config
+styler1st_web=haskell
+
+styler2nd_bin=brittany
+styler2nd_loc=--config-file
+styler2nd_opt=--write-mode=inplace
+styler2nd_web=lspitzner
+
+# Argument parsing
+while getopts ":s:b:qi" opt; do
+  case $opt in
+    s) styler1st_cfg="$OPTARG" ;;
+    b) styler2nd_cfg="$OPTARG" ;;
+    q) quiet_mode="yes" ;;
+    i) write_mode="yes" ;;
+    \?) echo "Invalid option -$OPTARG" >&2 && exit 1 ;;
+    :) echo "Option $opt requires the path to the configuration file" && exit 1 ;;
+  esac
+done
+
+if [ -n "$styler1st_cfg" ]; then
+    styler1st_cfg="$styler1st_loc $styler1st_cfg"
+else
+    styler1st_cfg=""
+    if [ -z "$quiet_mode" ]; then
+        echo "No configuration filepath specified for 'stylish-haskell' was specified, will use the default path"
+        echo "You can manually specify the path via the argument '-s FILEPATH'"
+        warned="yes"
+    fi
+fi
+
+if [ -n "$styler2nd_cfg" ]; then
+    styler2nd_cfg="$styler2nd_loc $styler2nd_cfg"
+else
+    styler2nd_cfg=""
+    if [ -z "$quiet_mode" ]; then
+        echo "No configuration filepath specified for 'brittany' was specified, will use the default path"
+        echo "You can manually specify the path via the argument '-b FILEPATH'"
+        warned="yes"
+    fi
+fi
+
+if [ -n "$warned" ]; then
+    echo "You can suppress warnings with the flag '-q'"
+fi
+
+# Create a temporary workspace
+temp_dir=$(mktemp -d -t Haskell-Styling-XXXXXXXX)
+prog_dir=$temp_dir/bin
+diff_dir=$temp_dir/diff
+pref_dir=$temp_dir/cabal
+pack_dir=$temp_dir/cabal/package-environment
+pass_1st=$temp_dir/styled.output.pass-1
+pass_2nd=$temp_dir/styled.output.pass-2
+pass_3rd=$temp_dir/styled.output.pass-3
+pass_4th=$temp_dir/styled.output.pass-4
+pass_5th=$temp_dir/styled.output.pass-5
+done_out=$temp_dir/styled.output.done
+mkdir $prog_dir
+mkdir $diff_dir
+mkdir $pref_dir
+mkdir $pack_dir
+touch $pass_1st
+touch $done_out
+
+download_styler () {
+    tar_ext=.tar.gz
+    styler_url=$(curl -s https://api.github.com/repos/$1/$2/releases/latest \
+        | grep "browser_download_url" \
+        | grep $tar_ext \
+        | cut -d '"' -f 4
+        )
+    styler_tar=$temp_dir/$(basename $styler_url)
+    curl --silent --location $styler_url --output $styler_tar
+    tar --directory=$prog_dir --extract --file=$styler_tar --strip-components 1
+    rm $styler_tar
+    echo "$prog_dir/$2"
+}
+
+install_styler () {
+    cabal install $1 \
+        --installdir=$prog_dir \
+        --install-method=copy \
+        --package-env $pack_dir \
+        --prefix=$pref_dir \
+        --with-compiler=ghc-8.10.7
+    echo "$prog_dir/$1"
+}
+
+cleanup () {
+    rm -rf $temp_dir
+}
+
+# Download stylers
+styler1st=$(which $styler1st_bin || download_styler $styler1st_web $styler1st_bin)
+styler2nd=$(which $styler2nd_bin ||  install_styler                $styler2nd_bin)
+
+# Run stylers
+haskell_source_files=$(find . -not -path "*dist-newstyle*" -a \
+                              -not -path "*stack-work*" -a \
+                              -type f -iregex ".*.\(hs\|hsc\|lhs\)" | sort)
+
+while read -r file
+do
+    diff_file=$(echo "$file" | cut -c 3- | tr '/' ' ')
+    # Apply 'styligh-haskell' first
+    eval "$styler1st $styler1st_cfg $file > $pass_1st"
+    # Apply 'brittany' second
+    eval "$styler2nd $styler2nd_cfg $file > $pass_2nd"
+    # Add extra space to align 'in' when the 'let' is not on same line
+    sed -e 's/^\([ \t]*\)in \(\S\)/\1in  \2/' $pass_2nd > $pass_3rd
+    # Place keyword 'let' and first binding on same line
+    sed '/^[[:blank:]]\+let$/ {$!{N; s/^\([[:blank:]]\+let\)\n[[:blank:]]\+\(.*\)$/\1 \2/; ty;P;D;:y}};' $pass_3rd > $pass_4th
+    # Collapse multiple blank lines into a single blank line
+    sed ':a; /^\n*$/{ s/\n//; N;  ba};' $pass_4th > $pass_5th
+    # Add additional blank line above "top level bindings."
+    sed '/^$/ {$!{N; /^\nimport /! {/^\nmodule /! { /^\n{-# [Ll]/! s/^\n\([^[:blank:]].*\)$/\n\n\1/; ty;P;D;:y}}}};' $pass_5th > $done_out
+    eval "diff $file $done_out > '$diff_dir/$diff_file'"
+    if [ -n "$write_mode" ]; then
+        mv $done_out $file
+    fi
+done <<< "$haskell_source_files"
+
+# Evaluate differences, if any
+if [ -z "$write_mode" ]; then
+    reformatted_files=$(find $diff_dir -type f -size +0 | sort)
+    if [ -n "$reformatted_files" ]; then
+        echo "Files which were not correctly formatted:"
+        while read -r file
+        do
+            echo "$file" \
+                | sed "s/${diff_dir//\//\\/}\///g" \
+                | tr ' ' '/' \
+                | sed -e 's/^/  - /'
+        done <<< "$reformatted_files"
+        exit_error='yes'
+    fi
+fi
+
+cleanup
+
+if [ -n "$exit_error" ]; then
+    exit 1
+else
+    exit 0
+fi
