@@ -120,30 +120,61 @@ haskell_source_files=$(find $source_code_paths -not -path "*dist-newstyle*" -a \
 
 while read -r file_src
 do
+    
     diff_file=$(echo "$file_src" | cut -c 3- | tr '/' ' ')
     # Ensure that imports are in "post-qualified" format
-#    sed 's/import[[:blank:]]\+qualified[[:blank:]]\+\([^[:blank:]]\+\)/import \1 qualified/g' $file_src > $pass_1st
+#  sed 's/import[[:blank:]]\+qualified[[:blank:]]\+\([^[:blank:]]\+\)/import \1 qualified/g' $file_src > $pass_1st
+
     # Apply 'styligh-haskell' first
     eval "$styler1st $styler1st_cfg $file_src > $pass_1st"
+
     # Apply 'brittany' second
     eval "$styler2nd $styler2nd_cfg $pass_1st > $pass_2nd"
+
     # Place keyword 'in' and first binding on same line if 'let' is not on the same line
-    sed 's/^\([ \t]*\)in \([^[:blank:]]\)/\1in  \2/' $pass_2nd > $pass_3rd
-    sed '/^[[:blank:]]\+in$/  {$!{N; s/^\([[:blank:]]\+\)in\n[[:blank:]]\+\(.*\)$/\1in  \2/; ty;P;D;:y}};' $pass_3rd > $pass_4th
+    sed \
+        's/^\([ \t]*\)in \([^[:blank:]]\)/\1in  \2/' \
+        $pass_2nd > $pass_3rd
+    
+    sed \
+        '/^[[:blank:]]\+in$/  {$!{N; s/^\([[:blank:]]\+\)in\n[[:blank:]]\+\(.*\)$/\1in  \2/; ty;P;D;:y}};' \
+        $pass_3rd > $pass_4th
+    
     # Place keyword 'let' and first binding on same line
-    sed '/^[[:blank:]]\+let$/ {$!{N; s/^\([[:blank:]]\+let\)\n[[:blank:]]\+\(.*\)$/\1 \2/;   ty;P;D;:y}};' $pass_4th > $pass_5th
+    sed \
+        '/^[[:blank:]]\+let$/ {$!{N; s/^\([[:blank:]]\+let\)\n[[:blank:]]\+\(.*\)$/\1 \2/;   ty;P;D;:y}};' \
+        $pass_4th > $pass_5th
+
     # Place first constructor *and* equal sign on a new, indented line
-    sed 's/^\(data.*\)[[:blank:]]\+=\(.*\)$/\1\n    =\2/g' $pass_5th > $pass_6th
+    sed \
+        's/^\(data.*\)[[:blank:]]\+=\(.*\)$/\1\n    =\2/g' \
+        $pass_5th > $pass_6th
+    
+    # Apply extra space between 'data' and type name
+    sed \
+        's/^data\(\(\W\w\+\)\+\)$/data \1/g' \
+        $pass_6th > $pass_7th
+    
     # Collapse multiple blank lines into a single blank line
-    sed ':a; /^\n*$/{ s/\n//; N; ba};' $pass_6th > $pass_7th
+    sed \
+        ':a; /^\n*$/{ s/\n//; N; ba};' \
+        $pass_7th > $pass_8th
+
     # Add additional blank line above "top level bindings."
-    sed '/^$/ {$!{N; /^\nimport /! {/^\nmodule /! {/^\n{-# [lL][aA][nN][gG]/! {/^\n{-# [oO][pP][tT][iI][oO][nN]/! s/^\n\([^[:blank:]].*\)$/\n\n\1/; ty;P;D;:y}}}}};' $pass_7th > $pass_8th
+    sed \
+        '/^$/ {$!{N; /^\nimport /! {/^\nmodule /! {/^\n{-# [lL][aA][nN][gG]/! {/^\n{-# [oO][pP][tT][iI][oO][nN]/! s/^\n\([^[:blank:]].*\)$/\n\n\1/; ty;P;D;:y}}}}};' \
+        $pass_8th > $pass_9th
+    
     # Remove the additional lines just added in the comments blocks.
-    sed ':a; /{-[^\n]$/,/-}/ { /^\n*$/ { s/\n//; N; ba} };' $pass_8th > $done_out
+    sed \
+        ':a; /{-[^\n]$/,/-}/ { /^\n*$/ { s/\n//; N; ba} };' \
+        $pass_9th > $done_out
+
     eval "diff $file_src $done_out > '$diff_dir/$diff_file'"
     if [ -n "$write_mode" ]; then
         mv $done_out $file_src
     fi
+
 done <<< "$haskell_source_files"
 
 # Evaluate differences, if any
